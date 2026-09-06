@@ -1,0 +1,148 @@
+flowchart TB
+
+%% ===== 0 · CLIENT LAYER (entry only — no edges point back here) =====
+subgraph CLIENT["0 · Client Layer — depends on the application"]
+  direction LR
+  WEB["Web App<br/>React / Next.js"]
+  MOB["Mobile App<br/>React Native · Swift · Kotlin"]
+  API["Direct API<br/>REST · gRPC · GraphQL"]
+end
+
+%% ===== 1-4 · ENTRY =====
+USR["1 · User Query"]
+GW["2 · Gateway<br/>Kong · APISIX · AWS API GW<br/>AuthN: Okta / Auth0 (OIDC)"]
+GUARD_IN{"3 · Input Guardrails<br/>Presidio (PII) · Llama Guard (safety)<br/>Lakera / Rebuff (injection) · NeMo Guardrails (scope)"}
+CACHE{"4 · Semantic Cache?<br/>Redis · GPTCache"}
+
+%% ===== 5 · ORCHESTRATION + SUPPORTING INFRA =====
+SUP["5 · Supervisor Agent<br/>LangGraph · CrewAI · OpenAI Agents SDK"]
+MEMSTATE[("Memory + State<br/>Mem0 / Zep (long-term memory)<br/>LangGraph checkpointer / Temporal (crash-resume)")]
+SUP -.->|reads / writes context| MEMSTATE
+
+%% ===== 6 · MULTI-AGENT TEAM =====
+subgraph MULTI["6 · Multi-Agent Team — communicate via A2A protocol"]
+  direction TB
+  A1["Research Agent"]
+  A2["Data / Code Agent"]
+  A3["Action Agent"]
+  A4["Critic Agent<br/>checks other agents' work"]
+  A1 -->|A2A| A2
+  A2 -->|A2A| A3
+  A3 -->|A2A| A4
+end
+
+LLM["Model Serving Layer<br/>vLLM · Bedrock · Vertex · Azure OpenAI<br/>router: LiteLLM / RouteLLM"]
+A1 --> LLM
+A2 --> LLM
+A3 --> LLM
+A4 --> LLM
+
+%% ===== 7 · KNOWLEDGE + TOOLS =====
+subgraph KNOW["7 · Knowledge + Tools"]
+  direction LR
+  RAG["Vector Retrieval (RAG)<br/>pgvector · Qdrant · Weaviate<br/>+ cross-encoder reranker"]
+  KG[("Knowledge Graph<br/>entities + relationships<br/>Neo4j / RDF")]
+  subgraph TOOLBOX["Tools"]
+    direction TB
+    MCP["MCP Registry<br/>schemas · scopes · auth<br/>one place for every tool"]
+    TOOLS["web search · code sandbox (E2B / gVisor)<br/>enterprise APIs / DB"]
+    MCP --> TOOLS
+  end
+end
+
+%% ===== 8-10 · RISK + OUTPUT CHECK =====
+HUMAN{"8 · Risky action?<br/>payment, send, delete"}
+APPROVE["9 · Human approval<br/>Slack / email interrupt card"]
+GUARD_OUT{"10 · Output Guardrails<br/>RAGAS (groundedness) · OPA (policy)<br/>Instructor / Outlines (schema)"}
+
+%% ===== 11 · EVALUATION LAYER (online) =====
+subgraph EVAL["11 · Evaluation Layer — scores every live response"]
+  direction LR
+  E1["Groundedness score<br/>RAGAS · Bespoke-MiniCheck"]
+  E2["Safety / policy score<br/>Llama Guard · OPA"]
+  E3["Latency + cost score<br/>Datadog / Prometheus"]
+end
+
+%% ===== 12 · RESPONSE =====
+RESP["12 · Response to User"]
+
+%% ===== 13 · DELIVERY (separate nodes — nothing points back up to Client Layer) =====
+subgraph DELIVERY["13 · Delivered back through the same channel"]
+  direction LR
+  WEB_OUT["Web App"]
+  MOB_OUT["Mobile App"]
+  API_OUT["Direct API"]
+end
+
+%% ---- main path, strictly downward ----
+WEB --> USR
+MOB --> USR
+API --> USR
+
+USR --> GW --> GUARD_IN
+GUARD_IN -- fail --> RESP
+GUARD_IN -- pass --> CACHE
+CACHE -- hit --> RESP
+CACHE -- miss --> SUP --> MULTI
+A1 --> RAG
+A1 --> KG
+A2 --> TOOLS
+A3 --> TOOLS
+MULTI --> HUMAN
+HUMAN -- yes --> APPROVE --> GUARD_OUT
+HUMAN -- no --> GUARD_OUT
+GUARD_OUT -- pass --> EVAL
+EVAL --> RESP
+RESP --> WEB_OUT
+RESP --> MOB_OUT
+RESP --> API_OUT
+
+%% ===== RETRY — one-way, terminates, never loops back up =====
+FIX["Retry with feedback<br/>(max 2x, then escalate)"]
+GUARD_OUT -- fail --> FIX
+APPROVE -- rejected --> FIX
+
+%% ===== OFFLINE — improves the NEXT version, not this request =====
+subgraph OFFLINE["Offline — improves the next version, not this request"]
+  direction TB
+  LOGS[("Traces + Logs<br/>OpenTelemetry · Langfuse / Arize Phoenix")]
+  FEEDBACK["Feedback signals<br/>👎 · overrides · low scores"]
+  RETRAIN{"What's broken?"}
+  FIX1["Improve prompts<br/>DSPy · promptfoo"]
+  FIX2["Update KG + re-embed RAG<br/>sentence-transformers"]
+  FIX3["Fix tool descriptions<br/>+ MCP schema"]
+  FIX4["Fine-tune model<br/>LoRA / DPO — Axolotl · Unsloth · TRL"]
+  OFFEVAL["Offline Evaluation Gate<br/>golden set · regression<br/>red team: PyRIT / Garak"]
+  DEPLOY["Registry + Rollout<br/>MLflow / W&B → canary → full<br/>served via vLLM / Bedrock"]
+
+  LOGS --> FEEDBACK --> RETRAIN
+  RETRAIN --> FIX1 & FIX2 & FIX3 & FIX4
+  FIX1 & FIX2 & FIX3 & FIX4 --> OFFEVAL
+  OFFEVAL -- pass --> DEPLOY
+  OFFEVAL -- fail --> RETRAIN
+end
+
+EVAL -.->|logged for analysis| LOGS
+FIX -.->|logged for analysis| LOGS
+
+classDef guard fill:#fde2e2,stroke:#c0392b,color:#000
+classDef core fill:#dbeafe,stroke:#1d4ed8,color:#000
+classDef agent fill:#e0f2fe,stroke:#0369a1,color:#000
+classDef human fill:#ffe4e6,stroke:#be123c,stroke-width:3px,color:#000
+classDef train fill:#ede9fe,stroke:#6d28d9,color:#000
+classDef obs fill:#fef3c7,stroke:#b45309,color:#000
+classDef kg fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#000
+classDef client fill:#f3f4f6,stroke:#4b5563,color:#000
+classDef eval fill:#fff7ed,stroke:#c2410c,color:#000
+classDef infra fill:#f5f3ff,stroke:#7c3aed,stroke-width:1px,color:#000
+
+class GUARD_IN,GUARD_OUT,FIX guard
+class SUP,CACHE core
+class A1,A2,A3,A4,TOOLS,RAG,MCP,LLM agent
+class KG kg
+class HUMAN,APPROVE human
+class RETRAIN,FIX1,FIX2,FIX3,FIX4,OFFEVAL,DEPLOY train
+class LOGS,FEEDBACK obs
+class WEB,MOB,API,WEB_OUT,MOB_OUT,API_OUT client
+class E1,E2,E3 eval
+class MEMSTATE infra
