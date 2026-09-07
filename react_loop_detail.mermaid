@@ -1,0 +1,36 @@
+%%{init: {
+  "theme": "base",
+  "themeVariables": {
+    "fontFamily": "Inter, Segoe UI, Helvetica, sans-serif",
+    "fontSize": "15px",
+    "primaryColor": "#e0f2fe",
+    "primaryBorderColor": "#0284c7",
+    "lineColor": "#0284c7",
+    "edgeLabelBackground": "#ffffff"
+  }
+}}%%
+flowchart TB
+
+subgraph REACT_LOOP["🔁 Inside one agent — the ReAct loop"]
+  direction TB
+  START(["Subtask received<br/>from Supervisor via A2A"])
+  THOUGHT["💭 Thought<br/>reason about what to do next<br/>given the subtask + observations so far"]
+  ACTION["⚡ Action<br/>call a tool, query RAG/KG,<br/>or call another agent"]
+  OBSERVE["👁️ Observation<br/>read the tool result / response"]
+  DONE{"Subtask<br/>complete?"}
+  RESULT(["Return result<br/>to Supervisor / next agent"])
+
+  START --> THOUGHT --> ACTION --> OBSERVE --> DONE
+  DONE -- "no, needs another step" --> THOUGHT
+  DONE -- "yes" --> RESULT
+end
+
+classDef process fill:#e0f2fe,stroke:#0284c7,stroke-width:1.5px,color:#075985
+classDef decision fill:#fef9c3,stroke:#ca8a04,stroke-width:2px,color:#713f12,font-weight:600
+classDef endpoint fill:#dcfce7,stroke:#16a34a,stroke-width:2.5px,color:#14532d,font-weight:700
+
+class THOUGHT,ACTION,OBSERVE process
+class DONE decision
+class START,RESULT endpoint
+
+style REACT_LOOP fill:#f8fafc,stroke:#94a3b8,stroke-width:1px

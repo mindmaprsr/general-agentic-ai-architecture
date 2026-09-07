@@ -1,0 +1,225 @@
+%%{init: {
+  "theme": "base",
+  "themeVariables": {
+    "fontFamily": "Inter, Segoe UI, Helvetica, sans-serif",
+    "fontSize": "15px",
+    "primaryColor": "#ffffff",
+    "primaryBorderColor": "#94a3b8",
+    "lineColor": "#94a3b8",
+    "edgeLabelBackground": "#ffffff"
+  },
+  "flowchart": {
+    "curve": "basis",
+    "nodeSpacing": 45,
+    "rankSpacing": 65,
+    "padding": 12
+  }
+}}%%
+flowchart TB
+
+%% ===== 0 · CLIENT LAYER =====
+subgraph CLIENT["🌐 0 · Client Layer — depends on the application"]
+  direction LR
+  WEB(["Web App<br/>React / Next.js"])
+  MOB(["Mobile App<br/>React Native · Swift · Kotlin"])
+  API(["Direct API<br/>REST · gRPC · GraphQL"])
+end
+
+%% ===== 1-4 · ENTRY =====
+USR(["1 · User Query"])
+GW["🚪 2 · Gateway<br/>Kong · APISIX · AWS API GW<br/>AuthN: Okta / Auth0 (OIDC)"]
+GUARD_IN{"🛡️ 3 · Input Guardrails<br/>Presidio (PII) · Llama Guard (safety)<br/>Lakera / Rebuff (injection) · NeMo Guardrails (scope)"}
+CACHE{"⚡ 4 · Semantic Cache?<br/>Redis · GPTCache"}
+
+%% ===== 5 · ORCHESTRATION + SUPPORTING INFRA =====
+SUP["🧭 5 · Supervisor Agent<br/>LangGraph · CrewAI · OpenAI Agents SDK"]
+
+subgraph MEMORY["🧠 Memory Layer"]
+  direction LR
+  M1[("Working Memory<br/>current conversation + scratchpad<br/>in-context window / Redis<br/>+ auto-summarization when context limit is hit")]
+  M2[("Episodic Memory<br/>past interactions, what happened when<br/>Mem0 · Zep")]
+  M3[("Semantic Memory<br/>facts, entities, learned knowledge<br/>vector DB + Knowledge Graph")]
+  M4[("Procedural Memory<br/>how to do things — skills, tool routines<br/>fine-tuned weights / cached prompt chains")]
+  M5[("State Checkpoint<br/>crash-resume across steps<br/>LangGraph checkpointer · Temporal — backed by Postgres")]
+end
+
+SUP -.->|reads / writes| MEMORY
+
+BUDGET["⏱️ Budget & Loop Governor<br/>max steps · max tokens · wall-clock timeout<br/>repeated-call / infinite-loop detector"]
+SUP -.->|enforced by| BUDGET
+
+%% ===== 6 · MULTI-AGENT TEAM =====
+subgraph MULTI["🤝 6 · Multi-Agent Team — communicate via A2A protocol"]
+  direction TB
+  A1["Research Agent"]
+  A2["Data / Code Agent"]
+  A3["Action Agent"]
+  A4["Critic Agent<br/>checks other agents' work"]
+  A1 ==>|A2A| A2
+  A2 ==>|A2A| A3
+  A3 ==>|A2A| A4
+end
+
+LLM["🧠 Model Serving Layer<br/>vLLM · Bedrock · Vertex · Azure OpenAI<br/>router: LiteLLM / RouteLLM<br/>+ fallback: circuit-breaks to secondary model on failure"]
+A1 --> LLM
+A2 --> LLM
+A3 --> LLM
+A4 --> LLM
+M3 -.->|backed by| RAG
+M3 -.->|backed by| KG
+
+REACT["📝 Note: each agent above internally runs a<br/>ReAct loop — Thought → Action → Observation —<br/>repeating until it's done with its subtask.<br/>Not drawn as a loop here to keep top-to-bottom layout intact.<br/>See companion diagram: react_loop_detail.mermaid"]
+MULTI -.- REACT
+
+%% ===== 7 · KNOWLEDGE + TOOLS =====
+DOCS[("Raw Document Store<br/>S3 / GCS / Blob<br/>ingestion pipeline: chunk → embed (offline)")]
+SECRETS[("🔐 Secrets Management<br/>Vault · AWS Secrets Manager<br/>short-lived, scoped credentials per tool call")]
+subgraph KNOW["📚 7 · Knowledge + Tools"]
+  direction LR
+  RAG["Vector Retrieval (RAG)<br/>pgvector (Postgres) · Qdrant · Weaviate<br/>+ cross-encoder reranker"]
+  KG[("Knowledge Graph<br/>entities + relationships<br/>Neo4j / RDF")]
+  subgraph TOOLBOX["🔧 Tools"]
+    direction TB
+    MCP["MCP Registry<br/>schemas · scopes · auth<br/>agents authenticate with short-lived scoped tokens<br/>(SPIFFE / OAuth2 client-credentials) — not the user's own login"]
+    TOOLS["web search · code sandbox (E2B / gVisor)<br/>enterprise APIs / DB (Postgres / MySQL)<br/>+ idempotency keys on every write to prevent duplicate side effects"]
+    MCP --> TOOLS
+  end
+end
+DOCS -.->|offline ingestion| RAG
+MCP -.->|fetches credentials| SECRETS
+
+%% ===== 8-10 · RISK + OUTPUT CHECK =====
+HUMAN{"⚠️ 8 · Risky action?<br/>payment, send, delete"}
+APPROVE["👤 9 · Human approval<br/>Slack / email interrupt card"]
+GUARD_OUT{"🛡️ 10 · Output Guardrails<br/>RAGAS (groundedness) · OPA (policy)<br/>Instructor / Outlines (schema)"}
+
+%% ===== 11 · EVALUATION LAYER (online) =====
+subgraph EVAL["📊 11 · Evaluation Layer — scores every live response"]
+  direction LR
+  E1["Groundedness score<br/>RAGAS · Bespoke-MiniCheck"]
+  E2["Safety / policy score<br/>Llama Guard · OPA"]
+  E3["Latency + cost score<br/>Datadog / Prometheus"]
+end
+
+%% ===== 12 · RESPONSE =====
+RESP(["✅ 12 · Response to User"])
+
+%% ===== 13 · DELIVERY =====
+subgraph DELIVERY["📤 13 · Delivered back through the same channel"]
+  direction LR
+  WEB_OUT(["Web App"])
+  MOB_OUT(["Mobile App"])
+  API_OUT(["Direct API"])
+end
+
+%% ---- main path, strictly downward ----
+WEB --> USR
+MOB --> USR
+API --> USR
+
+USR --> GW --> GUARD_IN
+GUARD_IN -- fail --> RESP
+GUARD_IN -- pass --> CACHE
+CACHE -- hit --> RESP
+CACHE -- miss --> SUP --> MULTI
+A1 --> RAG
+A1 --> KG
+A2 --> TOOLS
+A3 --> TOOLS
+MULTI --> HUMAN
+HUMAN -- yes --> APPROVE --> GUARD_OUT
+HUMAN -- no --> GUARD_OUT
+GUARD_OUT -- pass --> EVAL
+EVAL --> RESP
+RESP --> WEB_OUT
+RESP --> MOB_OUT
+RESP --> API_OUT
+
+%% ===== RETRY — one-way, terminates, never loops back up =====
+FIX["🔄 Retry with feedback<br/>(max 2x, then escalate)"]
+GUARD_OUT -- fail --> FIX
+APPROVE -- rejected --> FIX
+
+%% ===== OFFLINE — improves the NEXT version, not this request =====
+subgraph OFFLINE["📈 Offline — improves the next version, not this request"]
+  direction TB
+  LOGS[("Traces + Logs<br/>OpenTelemetry · Langfuse / Arize Phoenix")]
+  FEEDBACK["Feedback signals<br/>👎 · overrides · low scores"]
+  RETRAIN{"What's broken?"}
+  FIX1["Improve prompts<br/>DSPy · promptfoo"]
+  FIX2["Update KG + re-embed RAG<br/>sentence-transformers"]
+  FIX3["Fix tool descriptions<br/>+ MCP schema"]
+  FIX4["Fine-tune model<br/>LoRA / DPO — Axolotl · Unsloth · TRL"]
+  OFFEVAL["Offline Evaluation Gate<br/>golden set · regression<br/>red team: PyRIT / Garak"]
+  CICD["🚀 CI/CD Pipeline<br/>GitHub Actions / GitLab CI / Jenkins<br/>build → containerize (Docker) → IaC (Terraform)"]
+  REGISTRY["Model + Prompt Registry<br/>MLflow / W&B (Postgres metadata + S3 artifacts)<br/>versioned, immutable"]
+  SHADOW["Shadow Mode<br/>mirrors live traffic, zero user impact"]
+  CANARY["Canary — ~5% of traffic"]
+  ABTEST["A/B Test — ~50%<br/>stat-sig check on business KPI<br/>feature flags: LaunchDarkly"]
+  FULL["Full Rollout — 100%<br/>served via vLLM / Bedrock"]
+  RB["Auto-Rollback<br/>+ flagged for next retrain cycle"]
+
+  LOGS --> FEEDBACK --> RETRAIN
+  RETRAIN --> FIX1 & FIX2 & FIX3 & FIX4
+  FIX1 & FIX2 & FIX3 & FIX4 --> OFFEVAL
+  OFFEVAL -- pass --> CICD --> REGISTRY --> SHADOW --> CANARY --> ABTEST --> FULL
+  OFFEVAL -- fail --> RETRAIN
+  CANARY -- regression --> RB
+  ABTEST -- regression --> RB
+  FULL -- regression --> RB
+end
+
+EVAL -.->|logged for analysis| LOGS
+FIX -.->|logged for analysis| LOGS
+
+%% ===== LEGEND (pinned below main flow via invisible link) =====
+subgraph LEGEND["Legend"]
+  direction LR
+  L1["Client"]:::client
+  L2["Core / Orchestration"]:::core
+  L3["Agents / Tools"]:::agent
+  L4["Guardrail / Gate"]:::guard
+  L5["Human-in-the-loop"]:::human
+  L6["Evaluation"]:::eval
+  L7["Observability"]:::obs
+  L8["Retrain / Deploy"]:::train
+end
+RB -.- LEGEND
+linkStyle default stroke:#94a3b8,stroke-width:1.5px
+
+%% ===== STYLES =====
+classDef guard fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d,font-weight:600
+classDef core fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#1e3a8a,font-weight:600
+classDef agent fill:#e0f2fe,stroke:#0284c7,stroke-width:1.5px,color:#075985
+classDef human fill:#ffe4e6,stroke:#e11d48,stroke-width:3px,color:#881337,font-weight:600
+classDef train fill:#ede9fe,stroke:#7c3aed,stroke-width:1.5px,color:#4c1d95
+classDef obs fill:#fef9c3,stroke:#ca8a04,stroke-width:1.5px,color:#713f12
+classDef kg fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d,font-weight:600
+classDef client fill:#f1f5f9,stroke:#64748b,stroke-width:1.5px,color:#334155
+classDef eval fill:#ffedd5,stroke:#ea580c,stroke-width:1.5px,color:#7c2d12
+classDef infra fill:#f5f3ff,stroke:#8b5cf6,stroke-width:1.5px,color:#4c1d95
+classDef endpoint fill:#dcfce7,stroke:#16a34a,stroke-width:2.5px,color:#14532d,font-weight:700
+classDef note fill:#f8fafc,stroke:#94a3b8,stroke-width:1px,color:#475569,font-style:italic
+
+class GUARD_IN,GUARD_OUT,FIX guard
+class SUP,CACHE core
+class A1,A2,A3,A4,TOOLS,RAG,MCP,LLM agent
+class KG,DOCS kg
+class HUMAN,APPROVE human
+class RETRAIN,FIX1,FIX2,FIX3,FIX4,OFFEVAL,CICD,REGISTRY,SHADOW,CANARY,ABTEST,FULL,RB train
+class LOGS,FEEDBACK obs
+class WEB,MOB,API,WEB_OUT,MOB_OUT,API_OUT client
+class E1,E2,E3 eval
+class M1,M2,M3,M4,M5,BUDGET,SECRETS infra
+class USR,RESP endpoint
+class REACT note
+
+style CLIENT fill:#f8fafc,stroke:#cbd5e1,stroke-width:1px
+style DELIVERY fill:#f8fafc,stroke:#cbd5e1,stroke-width:1px
+style MULTI fill:#f0f9ff,stroke:#7dd3fc,stroke-width:1px
+style MEMORY fill:#faf5ff,stroke:#c4b5fd,stroke-width:1px
+style KNOW fill:#f0fdf4,stroke:#86efac,stroke-width:1px
+style TOOLBOX fill:#ecfeff,stroke:#67e8f9,stroke-width:1px
+style EVAL fill:#fff7ed,stroke:#fdba74,stroke-width:1px
+style OFFLINE fill:#faf5ff,stroke:#d8b4fe,stroke-width:1px
+style LEGEND fill:#ffffff,stroke:#e2e8f0,stroke-width:1px,stroke-dasharray: 3 3
